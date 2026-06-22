@@ -6,7 +6,7 @@ Subcommands:
   generate  Generate text from a prompt (alias: run).
   chat      Interactive chat REPL.
   cache     Pre-compute and save a reusable prompt (KV) cache for a long context.
-  serve     Launch an OpenAI-compatible HTTP server (mlx_lm.server).
+  serve     Serve an HTTP API — OpenAI-compatible (mlx_lm.server) or Anthropic Messages.
   config    View or change persisted defaults (default model, sampling params).
   doctor    Check whether this machine is ready to run LLMs.
   download  Pre-download a model from Hugging Face into the local cache.
@@ -18,6 +18,7 @@ import argparse
 import json
 import subprocess
 import sys
+import threading
 from typing import List, Optional
 
 from . import __version__
@@ -161,19 +162,32 @@ def build_parser(config: Optional[UserConfig] = None) -> argparse.ArgumentParser
     p_cache.set_defaults(func=cmd_cache)
 
     p_serve = sub.add_parser(
-        "serve", help="Launch an OpenAI-compatible HTTP server (mlx_lm.server)."
+        "serve",
+        help="Serve an HTTP API (OpenAI-compatible via mlx_lm.server, or Anthropic Messages).",
     )
     p_serve.add_argument(
         "--model", "-m", default=config.model, help="Default model to serve."
+    )
+    p_serve.add_argument(
+        "--api", choices=["openai", "anthropic"], default="openai",
+        help="Wire format to serve (default: openai via mlx_lm.server).",
     )
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8080)
     p_serve.add_argument("--adapter-path", default=None)
     p_serve.add_argument("--trust-remote-code", action="store_true")
     p_serve.add_argument(
+        "--api-key", default=None,
+        help="anthropic: require this value in the x-api-key header (default: open).",
+    )
+    p_serve.add_argument(
+        "--tunnel", action="store_true",
+        help="Expose the server publicly via a Cloudflare quick tunnel (needs cloudflared).",
+    )
+    p_serve.add_argument(
         "server_args",
         nargs=argparse.REMAINDER,
-        help="Extra args forwarded verbatim to mlx_lm.server (after --).",
+        help="openai: extra args forwarded verbatim to mlx_lm.server (after --).",
     )
     p_serve.set_defaults(func=cmd_serve)
 
@@ -393,14 +407,86 @@ def cmd_cache(args) -> int:
     return 0
 
 
+def _launch_tunnel(port: int):
+    """Start a Cloudflare quick tunnel to localhost:port; print the public URL.
+
+    Returns the cloudflared Popen (or None if cloudflared isn't installed). A
+    background thread scans its output for the trycloudflare.com URL and prints it.
+    """
+    import shutil
+
+    if not shutil.which("cloudflared"):
+        print(
+            "warning: --tunnel requested but `cloudflared` is not installed; serving "
+            "locally only. Install it with `brew install cloudflared`.",
+            file=sys.stderr,
+        )
+        return None
+
+    proc = subprocess.Popen(
+        ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+    )
+
+    def _watch():
+        import re
+
+        pat = re.compile(r"https://[-\w.]+\.trycloudflare\.com")
+        for line in proc.stdout:  # type: ignore[union-attr]
+            m = pat.search(line)
+            if m:
+                print(f"\n  Public URL: {m.group(0)}/v1/messages\n", file=sys.stderr)
+                break
+
+    threading.Thread(target=_watch, daemon=True).start()
+    return proc
+
+
 def cmd_serve(args) -> int:
     hw = detect_hardware()
     if not hw.can_run_mlx:
         print(
-            "warning: this is not an Apple-silicon Mac; mlx_lm.server may not run.",
+            "warning: this is not an Apple-silicon Mac; the model may not run.",
             file=sys.stderr,
         )
 
+    tunnel = _launch_tunnel(args.port) if args.tunnel else None
+    try:
+        if args.api == "anthropic":
+            return _serve_anthropic(args)
+        return _serve_openai(args)
+    finally:
+        if tunnel is not None:
+            tunnel.terminate()
+
+
+def _serve_anthropic(args) -> int:
+    if not args.model:
+        print(
+            "error: serve --api anthropic needs a model (pass --model or set a default "
+            "with `mlx-runner config set model ...`).",
+            file=sys.stderr,
+        )
+        return 2
+    from .anthropic_server import serve as serve_anthropic
+
+    print(
+        f"Serving Anthropic Messages API on http://{args.host}:{args.port}/v1/messages  "
+        "(Ctrl-C to stop)",
+        file=sys.stderr,
+    )
+    try:
+        return serve_anthropic(
+            args.model, args.host, args.port,
+            adapter_path=args.adapter_path,
+            trust_remote_code=args.trust_remote_code,
+            api_key=args.api_key,
+        )
+    except KeyboardInterrupt:
+        return 0
+
+
+def _serve_openai(args) -> int:
     cmd = [sys.executable, "-m", "mlx_lm.server", "--host", args.host, "--port", str(args.port)]
     if args.model:
         cmd += ["--model", args.model]
@@ -412,7 +498,7 @@ def cmd_serve(args) -> int:
     extra = [a for a in (args.server_args or []) if a != "--"]
     cmd += extra
 
-    print(f"Serving on http://{args.host}:{args.port}/v1  (Ctrl-C to stop)", file=sys.stderr)
+    print(f"Serving OpenAI-compatible API on http://{args.host}:{args.port}/v1  (Ctrl-C to stop)", file=sys.stderr)
     try:
         return subprocess.call(cmd)
     except FileNotFoundError:

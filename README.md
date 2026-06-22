@@ -142,9 +142,11 @@ mlx-runner generate -m <model> --prompt-cache-file doc.safetensors -p "List the 
 
 The context comes from `--context`/`-c` or stdin. `--max-kv-size` caps the cache size.
 
-### `serve` — OpenAI-compatible HTTP server
+### `serve` — HTTP API (OpenAI-compatible or Anthropic Messages)
 
-Launch [`mlx_lm.server`](https://github.com/ml-explore/mlx-lm), which exposes an OpenAI-compatible API (`POST /v1/chat/completions`):
+`serve` exposes the loaded model over HTTP in one of two wire formats, selected with `--api`.
+
+**OpenAI-compatible (default)** — launches [`mlx_lm.server`](https://github.com/ml-explore/mlx-lm) (`POST /v1/chat/completions`):
 
 ```bash
 mlx-runner serve -m <model> --host 127.0.0.1 --port 8080
@@ -152,7 +154,33 @@ mlx-runner serve -m <model> --host 127.0.0.1 --port 8080
 mlx-runner serve -m <model> -- --log-level DEBUG
 ```
 
-Any OpenAI client can then point at `http://127.0.0.1:8080/v1`. This runs `mlx_lm.server` in a subprocess, so it needs `mlx-lm` installed on an Apple-silicon Mac.
+Any OpenAI client can then point at `http://127.0.0.1:8080/v1`. This runs `mlx_lm.server` in a subprocess, so it needs `mlx-lm` installed.
+
+**Anthropic Messages API** — serves `POST /v1/messages` (non-streaming and SSE streaming) in the exact [Anthropic Messages](https://docs.anthropic.com/en/api/messages) wire format, so the `anthropic` SDK and Anthropic-compatible clients work unchanged against a local model:
+
+```bash
+mlx-runner serve -m <model> --api anthropic --port 8080
+mlx-runner serve -m <model> --api anthropic --api-key "$MY_KEY"   # require x-api-key
+```
+
+```python
+import anthropic
+client = anthropic.Anthropic(base_url="http://127.0.0.1:8080", api_key="not-needed")
+msg = client.messages.create(model="local", max_tokens=256,
+                             messages=[{"role": "user", "content": "Hello"}])
+print(msg.content[0].text)
+```
+
+Supported request fields: `model`, `max_tokens`, `messages` (text content), `system`, `temperature`, `top_p`, `top_k`, `stop_sequences`, `stream`. Tool use, images, and thinking aren't supported by a local text model and are rejected with a 400. By default the endpoint is open; pass `--api-key` to require it in the `x-api-key` header. There's also a `GET /health` probe. (The exact wire format is pinned by the vendored type stubs in `reference/anthropic-api/`.)
+
+**Expose it publicly with a Cloudflare tunnel.** Add `--tunnel` to either API to front the local server with a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/) and print a public `https://…trycloudflare.com` URL:
+
+```bash
+mlx-runner serve -m <model> --api anthropic --tunnel
+#   Public URL: https://random-words.trycloudflare.com/v1/messages
+```
+
+Requires `cloudflared` (`brew install cloudflared`); without it, `serve` warns and continues serving locally. For an authenticated public endpoint, combine `--tunnel` with `--api-key`.
 
 ### `config` — persisted defaults
 
@@ -207,7 +235,8 @@ The package uses a `src/` layout; `conftest.py` puts `src/` on `sys.path`, so th
 - **`mlx_runner.config`** — a small JSON store of user defaults (default model, sampling params) loaded into the CLI's argument defaults.
 - **`mlx_runner.doctor`** — pure-Python readiness checks (Apple silicon, Python, mlx/mlx-lm, memory) with a severity for each.
 - **`mlx_runner.catalog`** — a curated list of mlx-community models with approximate sizes, used to recommend the largest one that fits.
-- **`mlx_runner.cli`** — the argparse front end; `info`/`fit`/`config` work without mlx-lm installed, and `serve` shells out to `mlx_lm.server`.
+- **`mlx_runner.anthropic_server`** — a stdlib-only HTTP server emulating the Anthropic Messages API (`/v1/messages`, streaming + non-streaming) on top of `ModelRunner`; request parsing, response/SSE building, and stop-sequence handling are pure-Python and unit-tested without mlx.
+- **`mlx_runner.cli`** — the argparse front end; `info`/`fit`/`config` work without mlx-lm installed, `serve --api openai` shells out to `mlx_lm.server`, and `serve --api anthropic` runs the in-process Anthropic server.
 
 ## License
 
