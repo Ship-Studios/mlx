@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlx-runner"
+version = "0.1.0"
+description = "Hardware-aware CLI for running and chatting with local LLMs on Apple silicon via mlx-lm."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "Daniel Blankenship", email = "blankenshipdanielj@gmail.com" }]
+keywords = ["mlx", "mlx-lm", "llm", "apple-silicon", "cli", "local-inference"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# mlx-lm pulls in mlx (Apple silicon only) and transformers; it is only required
+# to actually load/run a model. `mlx-runner info` and `mlx-runner fit` work
+# without it. mlx-lm itself targets mlx>=0.31.2 and transformers>=5.7.0.
+dependencies = [
+    "mlx-lm>=0.21.0; platform_system == 'Darwin'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/ml-explore/mlx-lm"
+
+[project.scripts]
+mlx-runner = "mlx_runner.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
