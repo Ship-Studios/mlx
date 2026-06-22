@@ -15,7 +15,7 @@ The `info` and `fit` commands work on **any platform** (Linux, Intel Macs, etc.)
 
 ```bash
 pip install -e .          # core install
-pip install -e ".[dev]"   # plus pytest for development
+pip install -e ".[dev]"   # plus pytest + anthropic (for the Messages-API conformance tests)
 ```
 
 This installs the `mlx-runner` console script. You can also invoke the package directly with `python -m mlx_runner`.
@@ -223,13 +223,20 @@ The file is JSON and its location resolves in this order: `$MLX_RUNNER_CONFIG`, 
 ## Development
 
 ```bash
+pip install -e ".[dev]"                  # pytest + anthropic (conformance tests)
 pytest                                   # run the full suite
 pytest tests/test_memory.py::test_name   # run a single test
 ```
 
 The package uses a `src/` layout; `conftest.py` puts `src/` on `sys.path`, so the tests run without an editable install. The hardware-detection and memory-estimation modules are pure-Python and dependency-free, so the bulk of the suite runs on any platform — `mlx`/`mlx-lm` are imported lazily and only needed to actually load a model.
 
+The Messages-API conformance tests (`tests/test_anthropic_conformance.py`) point the official `anthropic` SDK at the in-process server and assert it round-trips `/v1/messages`. They `importorskip("anthropic")`, so they skip cleanly when the SDK isn't installed and run when it is (it's in the `dev` extra).
+
+**Code layout:** each module is a one-definition-per-file subpackage under `src/mlx_runner/<name>/` (one function or one class per file; multi-method classes assembled from single-method mixins). Public import paths are unchanged — `from mlx_runner.runner import ModelRunner`, `from mlx_runner.memory import check_fit`, etc. — via re-exports in each subpackage's `__init__.py`. See `CLAUDE.md` for the architecture and editing conventions.
+
 ## How it works
+
+Each component below is a subpackage of one-definition-per-file modules (see [Code layout](#development)); the import paths shown are the public re-exports.
 
 - **`mlx_runner.hardware`** — best-effort hardware detection via `sysctl`/`platform`, degrading gracefully off Apple silicon.
 - **`mlx_runner.memory`** — pure-Python estimation of weight, KV-cache, and overhead memory, plus a quantization recommender.

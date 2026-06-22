@@ -108,5 +108,6 @@ and the event order must match exactly.
 ```
 
 `error.type` ∈ `invalid_request_error` (400), `authentication_error` (401),
-`not_found_error` (404), `rate_limit_error` (429), `api_error` (500),
-`overloaded_error` (529).
+`not_found_error` (404), `request_too_large` (413 — the server caps request
+bodies at `MAX_REQUEST_BYTES`, 10 MiB), `rate_limit_error` (429),
+`api_error` (500), `overloaded_error` (529).
