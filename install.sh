@@ -110,4 +110,7 @@ if [[ "$SKIP_SETUP" -eq 1 ]]; then
 fi
 
 info "Running onboarding setup"
-"${RUN[@]}" setup "${SETUP_ARGS[@]}"
+# Expand SETUP_ARGS safely even when empty: macOS ships bash 3.2, where
+# "${arr[@]}" on an empty array under `set -u` errors with "unbound variable"
+# (fixed in bash 4.4+). The ${arr[@]+...} guard expands to nothing when unset/empty.
+"${RUN[@]}" setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
