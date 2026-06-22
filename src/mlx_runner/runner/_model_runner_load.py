@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from typing import Optional
 
 from ._import_mlx_lm import _import_mlx_lm
@@ -34,19 +33,21 @@ class _ModelRunnerLoadMixin:
         mlx_lm = _import_mlx_lm()
         # `trust_remote_code` only became a top-level `mlx_lm.load()` argument in
         # newer mlx-lm; older versions (at/above our >=0.21.0 floor) reject it with
-        # TypeError. Pass it only when the installed signature accepts it (named or
-        # via **kwargs); otherwise thread it through tokenizer_config, and omit it
-        # entirely when False so a standard load still works on older mlx-lm.
+        # TypeError. Try passing it; on the specific "unexpected keyword argument"
+        # failure, fall back to the version-stable HF path — thread it through
+        # tokenizer_config (omitting it entirely when False) — and retry. Signature
+        # inspection alone isn't enough: a decorated/wrapped load can advertise
+        # **kwargs yet still reject the arg, so we let the call itself be the oracle.
         tok_cfg = dict(tokenizer_config or {})
-        params = inspect.signature(mlx_lm.load).parameters
-        accepts_trc = "trust_remote_code" in params or any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
-        load_kwargs = {"adapter_path": adapter_path, "lazy": lazy}
-        if accepts_trc:
-            load_kwargs["trust_remote_code"] = trust_remote_code
-        elif trust_remote_code:
-            tok_cfg["trust_remote_code"] = True
-        load_kwargs["tokenizer_config"] = tok_cfg
-        model, tokenizer = mlx_lm.load(model_path, **load_kwargs)
+        load_kwargs = {"adapter_path": adapter_path, "tokenizer_config": tok_cfg, "lazy": lazy}
+        try:
+            model, tokenizer = mlx_lm.load(
+                model_path, trust_remote_code=trust_remote_code, **load_kwargs
+            )
+        except TypeError as e:
+            if "trust_remote_code" not in str(e):
+                raise
+            if trust_remote_code:
+                tok_cfg["trust_remote_code"] = True  # same object as load_kwargs["tokenizer_config"]
+            model, tokenizer = mlx_lm.load(model_path, **load_kwargs)
         return cls(model, tokenizer, model_path=model_path)

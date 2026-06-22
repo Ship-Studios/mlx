@@ -59,3 +59,20 @@ def test_new_mlx_lm_with_trust_remote_code_param(monkeypatch):
     ModelRunner.load("repo", trust_remote_code=True)
     assert captured["trust_remote_code"] is True
     assert captured["tokenizer_config"] == {}  # passed top-level, not duplicated
+
+
+def test_wrapped_load_advertises_kwargs_but_rejects_arg(monkeypatch):
+    # A decorated/wrapped load whose signature shows **kwargs yet still rejects
+    # trust_remote_code — signature inspection would be fooled; the try/except
+    # retry must still recover by threading via tokenizer_config.
+    captured = {}
+
+    def load(path, tokenizer_config=None, adapter_path=None, lazy=False, **kwargs):
+        if "trust_remote_code" in kwargs:
+            raise TypeError("load() got an unexpected keyword argument 'trust_remote_code'")
+        captured["tokenizer_config"] = tokenizer_config
+        return ("MODEL", "TOK")
+
+    _fake_mlx_lm(monkeypatch, load)
+    ModelRunner.load("repo", trust_remote_code=True)  # must NOT raise
+    assert captured["tokenizer_config"] == {"trust_remote_code": True}
