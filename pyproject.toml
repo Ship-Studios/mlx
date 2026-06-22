@@ -28,8 +28,11 @@ dependencies = [
     "mlx-lm>=0.21.0; platform_system == 'Darwin'",
 ]
 
+# `anthropic` is only needed for the Messages-API conformance tests
+# (tests/test_anthropic_conformance.py); they `importorskip` it, so the rest of
+# the suite stays dependency-free without it.
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "anthropic>=0.39"]
 
 [project.urls]
 Homepage = "https://github.com/ml-explore/mlx-lm"

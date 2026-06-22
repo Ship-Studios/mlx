@@ -1,15 +1,29 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg
 *.egg-info/
 build/
 dist/
 .pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 .venv/
 venv/
+env/
+ENV/
+
+# Project artifacts: prompt caches written by `mlx-runner cache -o ...`
+*.safetensors
 
 # Session/tooling state
 .remember/
+
+# Editors
+.idea/
+.vscode/
 
 # OS
 .DS_Store
