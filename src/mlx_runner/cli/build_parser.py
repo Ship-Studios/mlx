@@ -129,6 +129,12 @@ def build_parser(config: Optional[UserConfig] = None) -> argparse.ArgumentParser
         help="anthropic: require this value in the x-api-key header (default: open).",
     )
     p_serve.add_argument(
+        "--api-key-file", default=None,
+        help="anthropic: read the required x-api-key value from this file (e.g. a "
+        "chmod-600 key file). Preferred for tunnels: unlike --api-key the secret never "
+        "appears in argv (ps) or the process environment. --api-key takes precedence.",
+    )
+    p_serve.add_argument(
         "--tunnel", action="store_true",
         help="Expose the server publicly via a Cloudflare quick tunnel (needs cloudflared).",
     )

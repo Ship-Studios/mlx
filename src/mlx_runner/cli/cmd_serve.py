@@ -4,6 +4,7 @@ import sys
 
 from ..hardware import detect_hardware
 from ._launch_tunnel import _launch_tunnel
+from ._resolve_api_key import _resolve_api_key
 from ._serve_anthropic import _serve_anthropic
 from ._serve_openai import _serve_openai
 
@@ -16,11 +17,17 @@ def cmd_serve(args) -> int:
             file=sys.stderr,
         )
 
-    # --api-key only does anything on the anthropic path; mlx_lm.server has no auth.
+    # Resolve the effective key ONCE (--api-key flag > --api-key-file), then drive the
+    # warnings and _serve_anthropic off it. Writing it back to args.api_key means a key
+    # supplied via file enforces auth exactly like the flag — without it the warnings
+    # below would false-fire "UNAUTHENTICATED" on the secure file path.
+    args.api_key = _resolve_api_key(args)
+
+    # The key only does anything on the anthropic path; mlx_lm.server has no auth.
     if args.api_key and args.api != "anthropic":
         print(
-            "warning: --api-key is only enforced with `--api anthropic`; mlx_lm.server "
-            "(the openai path) has no built-in auth, so this key is ignored.",
+            "warning: --api-key/--api-key-file is only enforced with `--api anthropic`; "
+            "mlx_lm.server (the openai path) has no built-in auth, so this key is ignored.",
             file=sys.stderr,
         )
 
@@ -29,8 +36,8 @@ def cmd_serve(args) -> int:
         if args.api == "anthropic" and not args.api_key:
             print(
                 "WARNING: --tunnel will publish an UNAUTHENTICATED model to the public "
-                "internet. Anyone with the URL can use your compute. Pass --api-key to "
-                "require an x-api-key header.",
+                "internet. Anyone with the URL can use your compute. Pass --api-key or "
+                "--api-key-file to require an x-api-key header.",
                 file=sys.stderr,
             )
         elif args.api != "anthropic":
