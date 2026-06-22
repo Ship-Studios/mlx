@@ -104,9 +104,26 @@ mlx-runner serve -m <model> -- --log-level DEBUG
 
 Any OpenAI client can then point at `http://127.0.0.1:8080/v1`. This runs `mlx_lm.server` in a subprocess, so it needs `mlx-lm` installed on an Apple-silicon Mac.
 
+### `config` — persisted defaults
+
+Save a default model and default sampling parameters so you don't have to repeat them on every call:
+
+```bash
+mlx-runner config set model mlx-community/Qwen2.5-7B-Instruct-4bit
+mlx-runner config set temperature 0.7
+mlx-runner config show           # or --json
+mlx-runner config get model
+mlx-runner config unset temperature   # back to the built-in default
+mlx-runner config path           # where the file lives
+```
+
+Once a default model is set, `-m` becomes optional for `generate`, `chat`, `cache`, and `serve`. Any flag still wins over the saved value for that one invocation. Optional keys (e.g. `repetition_penalty`, `seed`) accept `none` to clear them.
+
+The file is JSON and its location resolves in this order: `$MLX_RUNNER_CONFIG`, then `$XDG_CONFIG_HOME/mlx-runner/config.json`, then `~/.config/mlx-runner/config.json`. A missing or malformed file simply falls back to built-in defaults.
+
 ### Generation options
 
-`generate` and `chat` share these sampling/decoding flags:
+`generate` and `chat` share these sampling/decoding flags (defaults below are the built-in ones; a saved `config` overrides them, and an explicit flag overrides the config):
 
 | Flag | Default | Notes |
 | --- | --- | --- |
@@ -137,7 +154,8 @@ The package uses a `src/` layout; `conftest.py` puts `src/` on `sys.path`, so th
 - **`mlx_runner.hardware`** — best-effort hardware detection via `sysctl`/`platform`, degrading gracefully off Apple silicon.
 - **`mlx_runner.memory`** — pure-Python estimation of weight, KV-cache, and overhead memory, plus a quantization recommender.
 - **`mlx_runner.runner`** — `ModelRunner`, a thin wrapper over `mlx_lm.load` / `stream_generate` with lazy mlx imports, plus prompt-cache helpers over `mlx_lm.models.cache`.
-- **`mlx_runner.cli`** — the argparse front end; `info`/`fit` work without mlx-lm installed, and `serve` shells out to `mlx_lm.server`.
+- **`mlx_runner.config`** — a small JSON store of user defaults (default model, sampling params) loaded into the CLI's argument defaults.
+- **`mlx_runner.cli`** — the argparse front end; `info`/`fit`/`config` work without mlx-lm installed, and `serve` shells out to `mlx_lm.server`.
 
 ## License
 
