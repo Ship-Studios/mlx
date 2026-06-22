@@ -22,7 +22,17 @@ This installs the `mlx-runner` console script. You can also invoke the package d
 
 ## Onboard a new Mac
 
-After installing, one command gets a fresh Apple-silicon Mac ready to run LLMs:
+**From a bare Mac**, `install.sh` bootstraps everything — it verifies the machine, finds (or `brew install`s) a recent Python, installs the `mlx-runner` package (via `pipx` when available), and then runs `mlx-runner setup`:
+
+```bash
+git clone <this-repo> && cd mlx && ./install.sh
+# install only, skip onboarding:           ./install.sh --skip-setup
+# pick your own model (forwarded to setup): ./install.sh -m mlx-community/Qwen2.5-7B-Instruct-4bit
+```
+
+(If you have no Python at all and no Homebrew, the script tells you to install [Homebrew](https://brew.sh) first — it won't run the Homebrew installer for you.)
+
+**If the package is already installed**, one command gets the Mac ready to run LLMs:
 
 ```bash
 mlx-runner setup
