@@ -2,15 +2,19 @@
 #
 # serve-tunnel.sh — serve the local MLX model over an authenticated Cloudflare tunnel.
 #
-# Generates (and persists) an API key, then runs:
-#   mlx-runner serve --api anthropic --api-key <key> --tunnel
+# Ensures an API key file exists, then runs:
+#   mlx-runner serve --api anthropic --api-key-file <file> --tunnel
 # so the in-process Anthropic Messages API is reachable at a public
 # https://<random>.trycloudflare.com/v1/messages URL, gated by the x-api-key header.
 #
+# The key is read by `mlx-runner serve` directly from a chmod-600 file, so the
+# secret never appears in argv (visible via `ps aux`) or the process environment.
+#
 # Usage:
-#   ./serve-tunnel.sh                      # default model (from `mlx-runner config`), port 8080
-#   ./serve-tunnel.sh --port 9000 -m repo  # extra args are forwarded to `mlx-runner serve`
-#   MLX_KEY=mysecret ./serve-tunnel.sh     # use a specific key instead of the persisted one
+#   ./serve-tunnel.sh                          # default model (from `mlx-runner config`), port 8080
+#   ./serve-tunnel.sh --port 9000 -m repo      # extra args are forwarded to `mlx-runner serve`
+#   MLX_KEY=mysecret ./serve-tunnel.sh         # set a specific key (written to the key file)
+#   MLX_KEY_FILE=/path/to/key ./serve-tunnel.sh    # use a different key-file location
 #   MLX_RUNNER_BIN=/path/to/mlx-runner ./serve-tunnel.sh
 #
 # The key persists at $MLX_KEY_FILE (default ~/.config/mlx-runner/serve-key) so the
@@ -44,7 +48,14 @@ fi
 command -v cloudflared >/dev/null 2>&1 \
   || die "cloudflared not installed — needed for the tunnel. Install with: brew install cloudflared"
 
-# --- API key: env > persisted file > freshly generated -----------------------
+# Fail closed: refuse to expose a tunnel unless the installed mlx-runner can read
+# the key from a file (--api-key-file). An older build would ignore it and start an
+# UNAUTHENTICATED public server. (serve is itself fail-closed on an unreadable/empty
+# key file; this guards the staler case where the flag doesn't exist at all.)
+"$RUNNER" serve --help 2>&1 | grep -q -- '--api-key-file' \
+  || die "installed mlx-runner lacks --api-key-file (predates the auth fix). Reinstall: ./install.sh --skip-setup"
+
+# --- API key file: MLX_KEY env > existing file > freshly generated -----------
 KEY_FILE="${MLX_KEY_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/mlx-runner/serve-key}"
 
 gen_key() {
@@ -57,28 +68,29 @@ gen_key() {
   fi
 }
 
+umask 077                       # any file/dir we create here is owner-only
+mkdir -p "$(dirname "$KEY_FILE")"
 if [[ -n "${MLX_KEY:-}" ]]; then
-  ok "Using API key from the MLX_KEY environment variable."
-elif [[ -f "$KEY_FILE" ]]; then
-  MLX_KEY="$(cat "$KEY_FILE")"
-  ok "Using saved API key from $KEY_FILE"
-else
-  info "Generating a new API key"
-  MLX_KEY="$(gen_key)"
-  mkdir -p "$(dirname "$KEY_FILE")"
   printf '%s\n' "$MLX_KEY" > "$KEY_FILE"
   chmod 600 "$KEY_FILE"
-  ok "Saved new API key to $KEY_FILE (chmod 600)"
+  ok "Wrote the provided MLX_KEY to $KEY_FILE"
+elif [[ -s "$KEY_FILE" ]]; then
+  ok "Using saved API key from $KEY_FILE"
+else
+  gen_key > "$KEY_FILE"
+  chmod 600 "$KEY_FILE"
+  ok "Generated a new API key at $KEY_FILE (chmod 600)"
 fi
 
 # --- launch ------------------------------------------------------------------
 EXTRA_ARGS=("$@")
 
 info "Starting authenticated Cloudflare tunnel (Ctrl-C to stop)"
-warn "Clients must send this in the x-api-key header:"
-printf '\n    %s\n\n' "${BOLD}${MLX_KEY}${RESET}" >&2
+warn "Clients send this in the x-api-key header (also saved in $KEY_FILE):"
+printf '\n    %s\n\n' "${BOLD}$(cat "$KEY_FILE")${RESET}" >&2
 info "Watch below for:  Public URL: https://<random>.trycloudflare.com/v1/messages"
 
 # exec so the server becomes this process (clean Ctrl-C / signal handling).
+# --api-key-file keeps the secret out of argv AND the environment.
 # ${EXTRA_ARGS[@]+...} guards the empty-array case under `set -u` on macOS bash 3.2.
-exec "$RUNNER" serve --api anthropic --api-key "$MLX_KEY" --tunnel ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+exec "$RUNNER" serve --api anthropic --api-key-file "$KEY_FILE" --tunnel ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
