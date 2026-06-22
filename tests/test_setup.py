@@ -76,6 +76,19 @@ def test_doctor_low_ram_warns():
     assert mem.status == doctor.WARN
 
 
+def test_doctor_cloudflared_is_optional_never_fails(monkeypatch):
+    # Present
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: "/usr/local/bin/cloudflared")
+    checks = doctor.run_checks(_hw())
+    cf = next(c for c in checks if c.name == "cloudflared")
+    assert cf.status == doctor.OK and "installed" in cf.detail
+    # Absent — still OK (optional), and doesn't drag is_ready down on its own
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    checks = doctor.run_checks(_hw())
+    cf = next(c for c in checks if c.name == "cloudflared")
+    assert cf.status == doctor.OK and "serve --tunnel" in cf.detail
+
+
 def test_worst_status_and_is_ready():
     ok = [doctor.Check("a", doctor.OK, "")]
     warn = ok + [doctor.Check("b", doctor.WARN, "")]

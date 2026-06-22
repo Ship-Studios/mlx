@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import platform
+import shutil
 import sys
 from dataclasses import dataclass
 from typing import List, Optional
@@ -109,6 +110,15 @@ def run_checks(hw: Optional[HardwareInfo] = None) -> List[Check]:
         checks.append(Check(
             "Memory", WARN, f"{format_bytes(ram)} is low",
             "Stick to ~1B 4-bit models; larger ones may not fit.",
+        ))
+
+    # 6. cloudflared — optional, only needed for `serve --tunnel`. Never fails.
+    if shutil.which("cloudflared"):
+        checks.append(Check("cloudflared", OK, "installed (enables `serve --tunnel`)"))
+    else:
+        checks.append(Check(
+            "cloudflared", OK,
+            "not installed — only needed for `serve --tunnel` (brew install cloudflared)",
         ))
 
     return checks
