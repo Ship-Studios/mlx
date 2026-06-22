@@ -11,11 +11,16 @@
 # secret never appears in argv (visible via `ps aux`) or the process environment.
 #
 # Usage:
-#   ./serve-tunnel.sh                          # default model (from `mlx-runner config`), port 8080
+#   ./serve-tunnel.sh                          # default model (from `mlx-runner config`)
 #   ./serve-tunnel.sh --port 9000 -m repo      # extra args are forwarded to `mlx-runner serve`
+#   PORT=9000 ./serve-tunnel.sh                # base port (default 8080); auto-advances if busy
 #   MLX_KEY=mysecret ./serve-tunnel.sh         # set a specific key (written to the key file)
 #   MLX_KEY_FILE=/path/to/key ./serve-tunnel.sh    # use a different key-file location
 #   MLX_RUNNER_BIN=/path/to/mlx-runner ./serve-tunnel.sh
+#
+# If no explicit --port is given, the script picks the first FREE port starting at
+# $PORT (default 8080), so a leftover server on the default port won't crash the
+# launch. The Cloudflare tunnel follows whichever port is chosen.
 #
 # The key persists at $MLX_KEY_FILE (default ~/.config/mlx-runner/serve-key) so the
 # URL's clients keep working across restarts. Delete that file to rotate the key.
@@ -82,9 +87,44 @@ else
   ok "Generated a new API key at $KEY_FILE (chmod 600)"
 fi
 
-# --- launch ------------------------------------------------------------------
+# --- choose a free port ------------------------------------------------------
 EXTRA_ARGS=("$@")
 
+# Print the first free TCP port at/above $1 on 127.0.0.1 (matches the server's
+# SO_REUSEADDR so we agree on what's bindable); exit 1 if none in a 100-port window.
+free_port() {
+  command -v python3 >/dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
+  python3 - "$1" <<'PY'
+import socket, sys
+start = int(sys.argv[1])
+for p in range(start, start + 100):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        s.bind(("127.0.0.1", p))
+    except OSError:
+        s.close(); continue
+    s.close(); print(p); sys.exit(0)
+sys.exit(1)
+PY
+}
+
+PORT_ARGS=()
+explicit_port=0
+for a in ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; do
+  case "$a" in --port|--port=*) explicit_port=1 ;; esac
+done
+if [[ "$explicit_port" -eq 0 ]]; then
+  base_port="${PORT:-8080}"
+  if port="$(free_port "$base_port")"; then
+    [[ "$port" != "$base_port" ]] && warn "port $base_port is in use — using free port $port instead."
+    PORT_ARGS=(--port "$port")
+  else
+    die "no free port found in ${base_port}-$((base_port + 99)); free one up or pass --port."
+  fi
+fi
+
+# --- launch ------------------------------------------------------------------
 info "Starting authenticated Cloudflare tunnel (Ctrl-C to stop)"
 warn "Clients send this in the x-api-key header (also saved in $KEY_FILE):"
 printf '\n    %s\n\n' "${BOLD}$(cat "$KEY_FILE")${RESET}" >&2
@@ -92,5 +132,6 @@ info "Watch below for:  Public URL: https://<random>.trycloudflare.com/v1/messag
 
 # exec so the server becomes this process (clean Ctrl-C / signal handling).
 # --api-key-file keeps the secret out of argv AND the environment.
-# ${EXTRA_ARGS[@]+...} guards the empty-array case under `set -u` on macOS bash 3.2.
-exec "$RUNNER" serve --api anthropic --api-key-file "$KEY_FILE" --tunnel ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+# ${...[@]+...} guards empty arrays under `set -u` on macOS bash 3.2.
+exec "$RUNNER" serve --api anthropic --api-key-file "$KEY_FILE" --tunnel \
+  ${PORT_ARGS[@]+"${PORT_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
