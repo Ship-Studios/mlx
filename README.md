@@ -20,7 +20,47 @@ pip install -e ".[dev]"   # plus pytest for development
 
 This installs the `mlx-runner` console script. You can also invoke the package directly with `python -m mlx_runner`.
 
+## Onboard a new Mac
+
+After installing, one command gets a fresh Apple-silicon Mac ready to run LLMs:
+
+```bash
+mlx-runner setup
+```
+
+`setup` runs the readiness checks, recommends the largest catalog model that fits this machine's memory, downloads it, saves it as your default model, and runs a quick smoke-test generation. From then on you can just `mlx-runner chat` (no `-m` needed).
+
+Useful flags: `--model/-m` to skip the recommendation and pick your own, `--no-download` / `--no-smoke-test` to do less, and `--force` to configure even when a readiness check fails. To inspect readiness on its own, use `mlx-runner doctor`.
+
 ## Usage
+
+### `setup` — onboard this Mac (start here)
+
+```bash
+mlx-runner setup                      # recommend + download + set default + smoke test
+mlx-runner setup -m mlx-community/Qwen2.5-7B-Instruct-4bit
+mlx-runner setup --no-smoke-test      # skip the test generation
+```
+
+Exit code is `0` on success, `1` if no model fits or a step fails, and non-zero (with guidance) if the machine isn't ready and `--force` wasn't given.
+
+### `doctor` — readiness check
+
+```bash
+mlx-runner doctor
+mlx-runner doctor --json
+```
+
+Reports a pass/fail line for each prerequisite — Apple silicon, Python version, `mlx`/`mlx-lm` importability, and memory — with remediation hints. Exit code is `1` if any hard requirement fails.
+
+### `download` — pre-fetch a model
+
+```bash
+mlx-runner download mlx-community/Qwen2.5-7B-Instruct-4bit
+mlx-runner download           # uses the configured default model
+```
+
+Fetches the model snapshot into the Hugging Face cache so the first `generate`/`chat` isn't a cold download. Prints the local path.
 
 ### `info` — inspect your machine
 
@@ -155,6 +195,8 @@ The package uses a `src/` layout; `conftest.py` puts `src/` on `sys.path`, so th
 - **`mlx_runner.memory`** — pure-Python estimation of weight, KV-cache, and overhead memory, plus a quantization recommender.
 - **`mlx_runner.runner`** — `ModelRunner`, a thin wrapper over `mlx_lm.load` / `stream_generate` with lazy mlx imports, plus prompt-cache helpers over `mlx_lm.models.cache`.
 - **`mlx_runner.config`** — a small JSON store of user defaults (default model, sampling params) loaded into the CLI's argument defaults.
+- **`mlx_runner.doctor`** — pure-Python readiness checks (Apple silicon, Python, mlx/mlx-lm, memory) with a severity for each.
+- **`mlx_runner.catalog`** — a curated list of mlx-community models with approximate sizes, used to recommend the largest one that fits.
 - **`mlx_runner.cli`** — the argparse front end; `info`/`fit`/`config` work without mlx-lm installed, and `serve` shells out to `mlx_lm.server`.
 
 ## License

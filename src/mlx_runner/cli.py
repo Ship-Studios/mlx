@@ -8,6 +8,9 @@ Subcommands:
   cache     Pre-compute and save a reusable prompt (KV) cache for a long context.
   serve     Launch an OpenAI-compatible HTTP server (mlx_lm.server).
   config    View or change persisted defaults (default model, sampling params).
+  doctor    Check whether this machine is ready to run LLMs.
+  download  Pre-download a model from Hugging Face into the local cache.
+  setup     Onboard this Mac: readiness check, pick + download a model, set default.
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ import sys
 from typing import List, Optional
 
 from . import __version__
+from .catalog import recommend_model
 from .config import (
     UserConfig,
     coerce_value,
@@ -26,6 +30,7 @@ from .config import (
     load_config,
     save_config,
 )
+from .doctor import FAIL, OK, WARN, Check, is_ready, run_checks
 from .hardware import detect_hardware
 from .memory import (
     check_fit,
@@ -196,6 +201,46 @@ def build_parser(config: Optional[UserConfig] = None) -> argparse.ArgumentParser
     c_unset = csub.add_parser("unset", help="Reset a key to its built-in default.")
     c_unset.add_argument("key", choices=known_keys(), metavar="KEY")
     c_unset.set_defaults(func=cmd_config_unset)
+
+    p_doctor = sub.add_parser(
+        "doctor", help="Check whether this machine is ready to run LLMs."
+    )
+    p_doctor.add_argument("--json", action="store_true", help="Emit JSON.")
+    p_doctor.set_defaults(func=cmd_doctor)
+
+    p_download = sub.add_parser(
+        "download", help="Pre-download a model from Hugging Face into the local cache."
+    )
+    p_download.add_argument(
+        "model", nargs="?", default=config.model,
+        help="HF repo id." + _model_default_note(config),
+    )
+    p_download.set_defaults(func=cmd_download)
+
+    p_setup = sub.add_parser(
+        "setup",
+        help="Onboard this Mac: check readiness, pick + download a model, set it as default.",
+    )
+    p_setup.add_argument(
+        "--model", "-m", default=None,
+        help="Skip the recommendation and use this repo id.",
+    )
+    p_setup.add_argument(
+        "--safety", type=float, default=config.safety_fraction,
+        help="Fraction of memory usable when recommending a model (0-1].",
+    )
+    p_setup.add_argument(
+        "--no-download", action="store_true", help="Set the default but don't fetch weights."
+    )
+    p_setup.add_argument(
+        "--no-smoke-test", action="store_true", help="Skip the test generation."
+    )
+    p_setup.add_argument(
+        "--force", action="store_true",
+        help="Continue past failed readiness checks (e.g. to only set config).",
+    )
+    p_setup.add_argument("--trust-remote-code", action="store_true")
+    p_setup.set_defaults(func=cmd_setup)
 
     return parser
 
@@ -452,6 +497,153 @@ def cmd_config_unset(args) -> int:
     setattr(config, args.key, getattr(UserConfig(), args.key))
     path = save_config(config)
     print(f"{args.key} reset to default  -> {path}")
+    return 0
+
+
+_STATUS_MARK = {OK: "✓", WARN: "!", FAIL: "✗"}
+
+
+def _print_checks(checks: List[Check]) -> None:
+    for c in checks:
+        mark = _STATUS_MARK.get(c.status, "?")
+        print(f"  {mark} {c.name}: {c.detail}")
+        if c.status != OK and c.remediation:
+            print(f"      → {c.remediation}")
+
+
+def cmd_doctor(args) -> int:
+    checks = run_checks()
+    if args.json:
+        print(json.dumps([c.to_dict() for c in checks], indent=2))
+    else:
+        print("Readiness checks:")
+        _print_checks(checks)
+        ready = is_ready(checks)
+        print("\n" + ("Ready to run LLMs." if ready else "Not ready — resolve the ✗ items above."))
+    return 0 if is_ready(checks) else 1
+
+
+def _download_model(repo_id: str) -> str:
+    """Fetch a model snapshot into the local HF cache; return its path.
+
+    ``huggingface_hub`` ships with mlx-lm; import it lazily so the rest of the
+    CLI works without it.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise RuntimeError(
+            "huggingface_hub is not installed. Install it with `pip install mlx-lm` "
+            "(it is pulled in as a dependency)."
+        ) from e
+    return snapshot_download(repo_id)
+
+
+def cmd_download(args) -> int:
+    repo_id = args.model
+    if not repo_id:
+        print(
+            "error: no model given and no default configured "
+            "(pass a repo id or run `mlx-runner config set model ...`).",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"Downloading {repo_id} ...", file=sys.stderr)
+    try:
+        path = _download_model(repo_id)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 3
+    except Exception as e:  # network / repo errors from hub
+        print(f"error: download failed: {e}", file=sys.stderr)
+        return 1
+    print(path)
+    return 0
+
+
+def cmd_setup(args) -> int:
+    hw = detect_hardware()
+
+    # 1. Readiness.
+    print("Checking readiness ...")
+    checks = run_checks(hw)
+    _print_checks(checks)
+    if not is_ready(checks) and not args.force:
+        print(
+            "\nNot ready — resolve the ✗ items above, or re-run with --force to "
+            "configure anyway (download/smoke-test will likely fail).",
+            file=sys.stderr,
+        )
+        return 1
+
+    # 2. Choose a model.
+    model = args.model
+    if model:
+        print(f"\nUsing requested model: {model}")
+    else:
+        available = hw.recommended_working_set_bytes or hw.total_ram_bytes
+        if not available:
+            print("error: could not determine available memory to recommend a model.", file=sys.stderr)
+            return 2
+        rec = recommend_model(available, safety_fraction=args.safety)
+        if rec is None:
+            print(
+                "error: no catalog model fits this machine's memory budget. "
+                "Specify a tiny model explicitly with --model.",
+                file=sys.stderr,
+            )
+            return 1
+        model = rec.repo_id
+        fit = rec.estimate()
+        print(f"\nRecommended: {rec.name}")
+        print(f"  {model}")
+        print(f"  ~{rec.params / 1e9:.1f}B params @ {rec.quant_bits}-bit, weights {fit.human()}")
+
+    # 3. Download (unless skipped).
+    if args.no_download:
+        print("\nSkipping download (--no-download).")
+    else:
+        print(f"\nDownloading {model} (this can take a while the first time) ...")
+        try:
+            path = _download_model(model)
+            print(f"  cached at {path}")
+        except RuntimeError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 3
+        except Exception as e:
+            print(f"error: download failed: {e}", file=sys.stderr)
+            return 1
+
+    # 4. Persist as the default model.
+    cfg = load_config()
+    cfg.model = model
+    cfg_path = save_config(cfg)
+    print(f"\nSet default model -> {model}\n  ({cfg_path})")
+
+    # 5. Smoke test.
+    if args.no_smoke_test:
+        print("\nSkipping smoke test (--no-smoke-test).")
+    elif args.no_download:
+        print("\nSkipping smoke test (no weights downloaded).")
+    else:
+        print("\nRunning a smoke-test generation ...")
+        try:
+            from .runner import GenerationConfig, MLXNotAvailableError, ModelRunner
+
+            runner = ModelRunner.load(model, trust_remote_code=args.trust_remote_code)
+            out = runner.generate(
+                prompt="Reply with a single short sentence to confirm you are working.",
+                config=GenerationConfig(max_tokens=32, temperature=0.0),
+            )
+            print(f"  model said: {out.strip()[:200]}")
+        except MLXNotAvailableError as e:
+            print(f"  smoke test skipped: {e}", file=sys.stderr)
+            return 3
+        except Exception as e:
+            print(f"  smoke test failed: {e}", file=sys.stderr)
+            return 1
+
+    print("\n✓ Setup complete. Try:  mlx-runner chat")
     return 0
 
 
