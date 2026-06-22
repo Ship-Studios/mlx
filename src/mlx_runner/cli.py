@@ -7,6 +7,7 @@ Subcommands:
   chat      Interactive chat REPL.
   cache     Pre-compute and save a reusable prompt (KV) cache for a long context.
   serve     Launch an OpenAI-compatible HTTP server (mlx_lm.server).
+  config    View or change persisted defaults (default model, sampling params).
 """
 from __future__ import annotations
 
@@ -17,6 +18,14 @@ import sys
 from typing import List, Optional
 
 from . import __version__
+from .config import (
+    UserConfig,
+    coerce_value,
+    default_config_path,
+    known_keys,
+    load_config,
+    save_config,
+)
 from .hardware import detect_hardware
 from .memory import (
     check_fit,
@@ -27,19 +36,20 @@ from .memory import (
 )
 
 
-def _add_generation_args(p: argparse.ArgumentParser) -> None:
+def _add_generation_args(p: argparse.ArgumentParser, config: UserConfig) -> None:
     g = p.add_argument_group("generation")
-    g.add_argument("--max-tokens", type=int, default=512)
+    g.add_argument("--max-tokens", type=int, default=config.max_tokens)
     g.add_argument(
-        "--temp", "--temperature", dest="temperature", type=float, default=0.0
+        "--temp", "--temperature", dest="temperature", type=float,
+        default=config.temperature,
     )
-    g.add_argument("--top-p", type=float, default=0.0)
-    g.add_argument("--top-k", type=int, default=0)
-    g.add_argument("--min-p", type=float, default=0.0)
-    g.add_argument("--repetition-penalty", type=float, default=None)
-    g.add_argument("--seed", type=int, default=None)
-    g.add_argument("--max-kv-size", type=int, default=None)
-    g.add_argument("--kv-bits", type=int, default=None)
+    g.add_argument("--top-p", type=float, default=config.top_p)
+    g.add_argument("--top-k", type=int, default=config.top_k)
+    g.add_argument("--min-p", type=float, default=config.min_p)
+    g.add_argument("--repetition-penalty", type=float, default=config.repetition_penalty)
+    g.add_argument("--seed", type=int, default=config.seed)
+    g.add_argument("--max-kv-size", type=int, default=config.max_kv_size)
+    g.add_argument("--kv-bits", type=int, default=config.kv_bits)
 
 
 def _config_from_args(args) -> "object":
@@ -59,7 +69,9 @@ def _config_from_args(args) -> "object":
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(config: Optional[UserConfig] = None) -> argparse.ArgumentParser:
+    if config is None:
+        config = load_config()
     parser = argparse.ArgumentParser(
         prog="mlx-runner",
         description="Hardware-aware local LLM runner built on mlx-lm.",
@@ -87,7 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_fit.add_argument("--kv-heads", type=int, default=None)
     p_fit.add_argument("--head-dim", type=int, default=None)
     p_fit.add_argument(
-        "--safety", type=float, default=0.9, help="Fraction of memory usable (0-1]."
+        "--safety", type=float, default=config.safety_fraction,
+        help="Fraction of memory usable (0-1].",
     )
     p_fit.add_argument("--json", action="store_true")
     p_fit.set_defaults(func=cmd_fit)
@@ -95,9 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen = sub.add_parser(
         "generate", aliases=["run"], help="Generate text from a prompt."
     )
-    p_gen.add_argument("--model", "-m", required=True, help="HF repo id or local path.")
+    p_gen.add_argument(
+        "--model", "-m", default=config.model, required=config.model is None,
+        help="HF repo id or local path." + _model_default_note(config),
+    )
     p_gen.add_argument("--prompt", "-p", help="User prompt; reads stdin if omitted.")
-    p_gen.add_argument("--system", default=None, help="Optional system prompt.")
+    p_gen.add_argument("--system", default=config.system, help="Optional system prompt.")
     p_gen.add_argument("--adapter-path", default=None, help="Optional LoRA adapter path.")
     p_gen.add_argument("--no-stream", action="store_true", help="Disable token streaming.")
     p_gen.add_argument("--stats", action="store_true", help="Print stats to stderr.")
@@ -107,21 +123,27 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Reuse a prompt cache saved by `cache` so the context isn't re-encoded.",
     )
-    _add_generation_args(p_gen)
+    _add_generation_args(p_gen, config)
     p_gen.set_defaults(func=cmd_generate)
 
     p_chat = sub.add_parser("chat", help="Interactive chat REPL.")
-    p_chat.add_argument("--model", "-m", required=True, help="HF repo id or local path.")
-    p_chat.add_argument("--system", default=None, help="Optional system prompt.")
+    p_chat.add_argument(
+        "--model", "-m", default=config.model, required=config.model is None,
+        help="HF repo id or local path." + _model_default_note(config),
+    )
+    p_chat.add_argument("--system", default=config.system, help="Optional system prompt.")
     p_chat.add_argument("--adapter-path", default=None)
     p_chat.add_argument("--trust-remote-code", action="store_true")
-    _add_generation_args(p_chat)
+    _add_generation_args(p_chat, config)
     p_chat.set_defaults(func=cmd_chat)
 
     p_cache = sub.add_parser(
         "cache", help="Pre-compute a reusable prompt (KV) cache for a long context."
     )
-    p_cache.add_argument("--model", "-m", required=True, help="HF repo id or local path.")
+    p_cache.add_argument(
+        "--model", "-m", default=config.model, required=config.model is None,
+        help="HF repo id or local path." + _model_default_note(config),
+    )
     p_cache.add_argument(
         "--context", "-c", help="Context text to cache; reads stdin if omitted."
     )
@@ -136,7 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve = sub.add_parser(
         "serve", help="Launch an OpenAI-compatible HTTP server (mlx_lm.server)."
     )
-    p_serve.add_argument("--model", "-m", default=None, help="Default model to serve.")
+    p_serve.add_argument(
+        "--model", "-m", default=config.model, help="Default model to serve."
+    )
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8080)
     p_serve.add_argument("--adapter-path", default=None)
@@ -148,7 +172,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_serve.set_defaults(func=cmd_serve)
 
+    p_config = sub.add_parser(
+        "config", help="View or change persisted defaults (default model, sampling)."
+    )
+    csub = p_config.add_subparsers(dest="config_command", required=True)
+
+    c_show = csub.add_parser("show", help="Print the current configuration.")
+    c_show.add_argument("--json", action="store_true", help="Emit JSON.")
+    c_show.set_defaults(func=cmd_config_show)
+
+    c_path = csub.add_parser("path", help="Print the config file path.")
+    c_path.set_defaults(func=cmd_config_path)
+
+    c_get = csub.add_parser("get", help="Print a single configuration value.")
+    c_get.add_argument("key", choices=known_keys(), metavar="KEY")
+    c_get.set_defaults(func=cmd_config_get)
+
+    c_set = csub.add_parser("set", help="Set a configuration value and save.")
+    c_set.add_argument("key", choices=known_keys(), metavar="KEY")
+    c_set.add_argument("value", help="New value (use 'none' to clear optional keys).")
+    c_set.set_defaults(func=cmd_config_set)
+
+    c_unset = csub.add_parser("unset", help="Reset a key to its built-in default.")
+    c_unset.add_argument("key", choices=known_keys(), metavar="KEY")
+    c_unset.set_defaults(func=cmd_config_unset)
+
     return parser
+
+
+def _model_default_note(config: UserConfig) -> str:
+    return f" (default from config: {config.model})" if config.model else ""
 
 
 def cmd_info(args) -> int:
@@ -355,6 +408,50 @@ def cmd_chat(args) -> int:
             sys.stdout.flush()
         sys.stdout.write("\n")
         messages.append({"role": "assistant", "content": "".join(parts)})
+    return 0
+
+
+def cmd_config_show(args) -> int:
+    config = load_config()
+    if args.json:
+        print(json.dumps(config.to_dict(), indent=2))
+        return 0
+    print(f"# {default_config_path()}")
+    for key in known_keys():
+        value = getattr(config, key)
+        print(f"{key} = {value if value is not None else '(default)'}")
+    return 0
+
+
+def cmd_config_path(args) -> int:
+    print(default_config_path())
+    return 0
+
+
+def cmd_config_get(args) -> int:
+    value = getattr(load_config(), args.key)
+    print("" if value is None else value)
+    return 0
+
+
+def cmd_config_set(args) -> int:
+    try:
+        value = coerce_value(args.key, args.value)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+    config = load_config()
+    setattr(config, args.key, value)
+    path = save_config(config)
+    print(f"{args.key} = {value if value is not None else '(default)'}  -> {path}")
+    return 0
+
+
+def cmd_config_unset(args) -> int:
+    config = load_config()
+    setattr(config, args.key, getattr(UserConfig(), args.key))
+    path = save_config(config)
+    print(f"{args.key} reset to default  -> {path}")
     return 0
 
 
