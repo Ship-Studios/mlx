@@ -148,6 +148,13 @@ The context comes from `--context`/`-c` or stdin. `--max-kv-size` caps the cache
 
 `serve` exposes the loaded model over HTTP in one of two wire formats, selected with `--api`.
 
+**Auto-pick a model that fits this machine.** Omit `-m` (and don't have a default model configured) and `serve` lists the catalog models whose weights fit the detected memory budget, then serves the most capable one — so you don't blindly load a model too big for the box and crash it via unified-memory exhaustion. On a TTY you pick from the list (Enter takes the default); headless (e.g. over a tunnel) it auto-selects the default without blocking. Tune the headroom with `--safety` (fraction of memory usable, `0-1]`, default `0.8`; lower leaves more room for KV-cache growth under load):
+
+```bash
+mlx-runner serve --api anthropic            # choose from models that fit, then serve
+mlx-runner serve --safety 0.7               # more conservative pick (smaller model)
+```
+
 **OpenAI-compatible (default)** — launches [`mlx_lm.server`](https://github.com/ml-explore/mlx-lm) (`POST /v1/chat/completions`):
 
 ```bash
