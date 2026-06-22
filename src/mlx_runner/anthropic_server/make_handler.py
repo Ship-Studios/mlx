@@ -36,10 +36,18 @@ def make_handler(runner, *, api_key: Optional[str] = None):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(data)))
+            if self.close_connection:
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(data)
 
         def _send_error(self, err: AnthropicError):
+            # Error paths can return before the request body is read (404/401/413).
+            # On an HTTP/1.1 keep-alive connection — which cloudflared pools to the
+            # origin — the unread body would be parsed as the next request's start
+            # line, corrupting it (a spurious 501). Close the connection so it is
+            # never reused with an undrained body.
+            self.close_connection = True
             self._send_json(err.status, err.body())
 
         def _check_auth(self) -> Optional[AnthropicError]:

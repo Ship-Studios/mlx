@@ -1,3 +1,4 @@
+import http.client
 import json
 import threading
 import urllib.error
@@ -345,3 +346,59 @@ def test_handler_model_error_becomes_500():
         with pytest.raises(urllib.error.HTTPError) as e:
             _post(base, body, headers={"content-type": "application/json"})
         assert e.value.code == 500 and json.loads(e.value.read())["error"]["type"] == "api_error"
+
+
+# --- keep-alive poisoning: error responses must close the connection ---------
+# An error path returns before the request body is read; on an HTTP/1.1 keep-alive
+# connection (cloudflared pools these) the undrained body would corrupt the next
+# request. Every error funnels through _send_error, which now closes the conn.
+
+
+def _hc(base):
+    return http.client.HTTPConnection(base.split("://", 1)[1], timeout=10)
+
+
+_BODY = json.dumps({"model": "m", "max_tokens": 4, "messages": [{"role": "user", "content": "hi"}]})
+
+
+def test_error_responses_send_connection_close():
+    with _running_server(FakeRunner(["hi"]), api_key="secret") as base:
+        c = _hc(base)
+        c.request("POST", "/v1/messages", body=_BODY, headers={"content-type": "application/json"})  # no key → 401
+        r = c.getresponse(); r.read()
+        assert r.status == 401 and (r.getheader("Connection") or "").lower() == "close"
+        c.close()
+
+        c = _hc(base)
+        c.request("GET", "/nope")  # 404
+        r = c.getresponse(); r.read()
+        assert r.status == 404 and (r.getheader("Connection") or "").lower() == "close"
+        c.close()
+
+
+def test_success_response_keeps_connection_alive():
+    with _running_server(FakeRunner(["hi"])) as base:  # open (no api_key)
+        c = _hc(base)
+        c.request("POST", "/v1/messages", body=_BODY, headers={"content-type": "application/json"})
+        r = c.getresponse(); r.read()
+        assert r.status == 200
+        assert (r.getheader("Connection") or "").lower() != "close"  # keep-alive preserved
+        c.close()
+
+
+def test_request_after_error_on_same_connection_is_not_poisoned():
+    # The actual cure: an erroring request followed by a valid one on the SAME
+    # client. Pre-fix the reused keep-alive socket carried request-1's undrained
+    # body, so request-2 was mis-parsed into a bogus 501. Now the 401 closes the
+    # conn, http.client transparently reconnects, and request-2 succeeds.
+    with _running_server(FakeRunner(["ok"]), api_key="secret") as base:
+        c = _hc(base)
+        c.request("POST", "/v1/messages", body=_BODY, headers={"content-type": "application/json"})
+        r1 = c.getresponse(); r1.read()
+        assert r1.status == 401
+        c.request("POST", "/v1/messages", body=_BODY,
+                  headers={"content-type": "application/json", "x-api-key": "secret"})
+        r2 = c.getresponse(); data = r2.read()
+        assert r2.status == 200, (r2.status, data[:200])
+        assert json.loads(data)["content"][0]["text"] == "ok"
+        c.close()
