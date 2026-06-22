@@ -39,6 +39,7 @@ The central design constraint: **the package must import cleanly on any platform
 
 ### Conventions to preserve when editing
 
+- **Strict one-method-per-file rule**: Each file must contain exactly one class or function definition. No multiple methods in a single file.
 - Never add a top-level `import mlx` or `import mlx_lm` anywhere in the package — keep them lazy and inside functions. The same applies to the CLI: don't import `runner` at module scope.
 - Sizes are bytes everywhere internally; format only at the display boundary with `format_bytes` (binary/GiB) and the `human()` methods on the dataclasses.
 - Dataclasses that cross the `--json` boundary expose `to_dict()`; keep it in sync with the dataclass fields.
