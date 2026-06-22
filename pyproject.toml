@@ -7,7 +7,7 @@ name = "mlx-runner"
 version = "0.1.0"
 description = "Hardware-aware CLI for running and chatting with local LLMs on Apple silicon via mlx-lm."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Daniel Blankenship", email = "blankenshipdanielj@gmail.com" }]
 keywords = ["mlx", "mlx-lm", "llm", "apple-silicon", "cli", "local-inference"]

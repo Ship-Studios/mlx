@@ -1,4 +1,9 @@
 import json
+import threading
+import urllib.error
+import urllib.request
+from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
 
 import pytest
 
@@ -189,3 +194,154 @@ def test_generate_stream_message_delta_carries_stop_reason():
 def test_error_body_shape():
     err = a.AnthropicError(400, "invalid_request_error", "bad")
     assert err.body() == {"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}}
+
+
+# --- token counting (incl. stop-interruption staleness) ----------------------
+
+
+class FakeTokenizer:
+    def encode(self, text):
+        return list(text)  # one "token" per char → len == len(text)
+
+
+def test_output_tokens_uses_working_tokenizer_when_not_stopped():
+    runner = FakeRunner([], finish_reason="stop", gen_tokens=0)
+    runner.tokenizer = FakeTokenizer()
+    assert a._output_tokens(runner, "abcd", stopped=False) == 4
+
+
+def test_output_tokens_uses_stats_generation_tokens_when_positive():
+    runner = FakeRunner([], gen_tokens=7)
+    assert a._output_tokens(runner, "whatever", stopped=False) == 7
+
+
+def test_output_tokens_ignores_stale_stats_when_stopped():
+    # Stale positive stats from a prior request must NOT be reused on a stop break.
+    runner = FakeRunner([], gen_tokens=999)
+    runner.tokenizer = FakeTokenizer()
+    assert a._output_tokens(runner, "keep", stopped=True) == 4  # counts the text, not 999
+
+
+def test_output_tokens_encode_failure_falls_back():
+    class BadTok:
+        def encode(self, text):
+            raise RuntimeError("boom")
+
+    runner = FakeRunner([], gen_tokens=0)
+    runner.tokenizer = BadTok()
+    assert a._output_tokens(runner, "abcdefgh", stopped=False) == 2  # len//4
+
+
+def test_generate_full_stop_sequence_reports_text_based_tokens():
+    runner = FakeRunner(["keep", "STOPx"], gen_tokens=999)  # stale stats
+    runner.tokenizer = FakeTokenizer()
+    parsed = a.parse_request({
+        "model": "m", "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}], "stop_sequences": ["STOP"],
+    })
+    msg = a.generate_full(runner, parsed, "msg_1")
+    assert msg["content"][0]["text"] == "keep"
+    assert msg["usage"]["output_tokens"] == 4  # not the stale 999
+
+
+# --- stop-filter edge cases --------------------------------------------------
+
+
+def test_stop_filter_single_char_no_holdback():
+    sf = a.StopSequenceFilter(["#"])  # max_len 1 → hold<=0, emit immediately
+    assert sf.feed("ab") == ("ab", False)
+    emit, stopped = sf.feed("c#d")
+    assert emit == "c" and stopped is True and sf.matched == "#"
+
+
+def test_stop_filter_earliest_match_wins_across_sequences():
+    sf = a.StopSequenceFilter(["END", "STOP"])
+    emit, stopped = sf.feed("aaSTOPbbENDcc")
+    assert emit == "aa" and stopped is True and sf.matched == "STOP"
+
+
+def test_stop_filter_reconstructs_text_across_emit_and_flush():
+    sf = a.StopSequenceFilter(["ZZZ"])
+    out = []
+    for chunk in ["he", "llo wor", "ld"]:
+        emit, stopped = sf.feed(chunk)
+        out.append(emit)
+        assert not stopped
+    out.append(sf.flush())
+    assert "".join(out) == "hello world"  # invariant: nothing lost when no stop
+
+
+# --- HTTP handler (drives a real ThreadingHTTPServer with a fake runner) ------
+
+
+@contextmanager
+def _running_server(runner, **kw):
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), a.make_handler(runner, **kw))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def _post(base, body, headers=None, path="/v1/messages", raw=None):
+    data = raw if raw is not None else json.dumps(body).encode()
+    req = urllib.request.Request(base + path, data=data, headers=headers or {}, method="POST")
+    return urllib.request.urlopen(req, timeout=10)
+
+
+def test_handler_health():
+    with _running_server(FakeRunner(["x"])) as base:
+        r = urllib.request.urlopen(base + "/health", timeout=5)
+        assert r.status == 200 and json.loads(r.read())["status"] == "ok"
+
+
+def test_handler_unknown_path_404():
+    with _running_server(FakeRunner(["x"])) as base:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(base, {"model": "m", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}, path="/nope")
+        assert e.value.code == 404
+        assert json.loads(e.value.read())["error"]["type"] == "not_found_error"
+
+
+def test_handler_invalid_json_400():
+    with _running_server(FakeRunner(["x"])) as base:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(base, None, raw=b"{not json")
+        assert e.value.code == 400
+
+
+def test_handler_auth_enforced():
+    with _running_server(FakeRunner(["hi"]), api_key="secret") as base:
+        body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(base, body)  # no key
+        assert e.value.code == 401 and json.loads(e.value.read())["error"]["type"] == "authentication_error"
+        r = _post(base, body, headers={"x-api-key": "secret", "content-type": "application/json"})
+        assert r.status == 200 and json.loads(r.read())["content"][0]["text"] == "hi"
+
+
+def test_handler_body_too_large_413():
+    with _running_server(FakeRunner(["x"])) as base:
+        headers = {"Content-Length": str(a.MAX_REQUEST_BYTES + 1), "content-type": "application/json"}
+        # urllib won't send a body bigger than data; fake an oversized Content-Length.
+        req = urllib.request.Request(base + "/v1/messages", data=b"{}", headers=headers, method="POST")
+        # Override the header urllib would otherwise compute from len(data).
+        req.add_unredirected_header("Content-Length", str(a.MAX_REQUEST_BYTES + 1))
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(req, timeout=10)
+        assert e.value.code == 413
+
+
+def test_handler_model_error_becomes_500():
+    class Boom(FakeRunner):
+        def stream(self, prompt=None, *, messages=None, system=None, config=None):
+            raise RuntimeError("model exploded")
+            yield  # pragma: no cover
+
+    with _running_server(Boom([])) as base:
+        body = {"model": "m", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]}
+        with pytest.raises(urllib.error.HTTPError) as e:
+            _post(base, body, headers={"content-type": "application/json"})
+        assert e.value.code == 500 and json.loads(e.value.read())["error"]["type"] == "api_error"

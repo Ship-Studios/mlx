@@ -7,7 +7,7 @@ A hardware-aware CLI for running and chatting with local LLMs on Apple silicon v
 ## Requirements
 
 - **macOS on Apple silicon** (M1/M2/M3/…) to actually load and run models. `mlx-lm` pulls in `mlx`, which is Apple-silicon-only.
-- **Python 3.8+**
+- **Python 3.9+** (mlx-lm's floor; `install.sh` enforces it)
 
 The `info` and `fit` commands work on **any platform** (Linux, Intel Macs, etc.) — they only inspect hardware and do memory math, so you can plan before you're on the right machine.
 
@@ -92,7 +92,7 @@ mlx-runner fit 1.5B --bits 8 --seq-len 8192
 mlx-runner fit 13B --json
 ```
 
-Parameter counts accept `K`/`M`/`B`/`T` suffixes (e.g. `350M`, `1.5B`) or a plain integer. The output reports the estimated breakdown (weights / KV-cache / overhead) and recommends the highest-quality quantization that fits. Pass KV-cache dimensions (`--layers`, `--kv-heads`, `--head-dim`) to include the cache in the estimate.
+Parameter counts accept `K`/`M`/`B`/`T` suffixes (e.g. `350M`, `1.5B`) or a plain integer. The output reports the estimated breakdown (weights / KV-cache / overhead) and recommends the highest-quality quantization that fits. Pass KV-cache dimensions (`--layers`, `--kv-heads`, `--head-dim`) to include the cache in the estimate. `--safety` sets the fraction of available memory treated as usable (default `0.9`); `setup` accepts the same flag when recommending a model.
 
 Exit code is `1` when the model does not fit, `0` when it does.
 
@@ -118,6 +118,8 @@ Pre-quantized 4-bit builds from the [`mlx-community`](https://huggingface.co/mlx
 | Qwen2.5 7B | `mlx-community/Qwen2.5-7B-Instruct-4bit` |
 | Llama 3.1 8B | `mlx-community/Meta-Llama-3.1-8B-Instruct-4bit` |
 | Qwen2.5 14B | `mlx-community/Qwen2.5-14B-Instruct-4bit` |
+| Qwen2.5 32B | `mlx-community/Qwen2.5-32B-Instruct-4bit` |
+| Qwen2.5 72B | `mlx-community/Qwen2.5-72B-Instruct-4bit` |
 
 ### `chat` — interactive REPL
 
@@ -236,6 +238,7 @@ The package uses a `src/` layout; `conftest.py` puts `src/` on `sys.path`, so th
 - **`mlx_runner.doctor`** — pure-Python readiness checks (Apple silicon, Python, mlx/mlx-lm, memory) with a severity for each.
 - **`mlx_runner.catalog`** — a curated list of mlx-community models with approximate sizes, used to recommend the largest one that fits.
 - **`mlx_runner.anthropic_server`** — a stdlib-only HTTP server emulating the Anthropic Messages API (`/v1/messages`, streaming + non-streaming) on top of `ModelRunner`; request parsing, response/SSE building, and stop-sequence handling are pure-Python and unit-tested without mlx.
+- **`mlx_runner.embeddings`** — an `EmbeddingRunner` over `mlx-embeddings` plus a pure-Python `cosine_similarity_matrix`. Internal/library-only — not yet wired to a CLI command.
 - **`mlx_runner.cli`** — the argparse front end; `info`/`fit`/`config` work without mlx-lm installed, `serve --api openai` shells out to `mlx_lm.server`, and `serve --api anthropic` runs the in-process Anthropic server.
 
 ## License

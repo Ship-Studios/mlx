@@ -21,6 +21,9 @@ from typing import Iterator, List, Optional
 
 ANTHROPIC_VERSION = "2023-06-01"
 
+# Cap request bodies to bound memory; a chat request is far smaller than this.
+MAX_REQUEST_BYTES = 10 * 1024 * 1024
+
 
 # --- errors ------------------------------------------------------------------
 
@@ -299,11 +302,15 @@ def _count_tokens(runner, text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def _output_tokens(runner, text: str) -> int:
-    stats = getattr(runner, "last_stats", None)
-    gen = getattr(stats, "generation_tokens", None) if stats else None
-    if isinstance(gen, int) and gen > 0:
-        return gen
+def _output_tokens(runner, text: str, *, stopped: bool = False) -> int:
+    # On a stop-sequence interruption the generator is abandoned before the runner
+    # updates last_stats, so last_stats holds the *previous* request's count (the
+    # runner is shared). Count from the emitted text in that case instead.
+    if not stopped:
+        stats = getattr(runner, "last_stats", None)
+        gen = getattr(stats, "generation_tokens", None) if stats else None
+        if isinstance(gen, int) and gen > 0:
+            return gen
     return _count_tokens(runner, text)
 
 
@@ -347,7 +354,7 @@ def generate_full(runner, parsed: ParsedRequest, message_id: str) -> dict:
         stop_reason=stop_reason,
         stop_sequence=stop_sequence,
         input_tokens=_input_tokens(runner, parsed),
-        output_tokens=_output_tokens(runner, text),
+        output_tokens=_output_tokens(runner, text, stopped=stopped),
     )
 
 
@@ -384,7 +391,9 @@ def generate_stream(runner, parsed: ParsedRequest, message_id: str) -> Iterator[
         stop_sequence = None
 
     yield content_block_stop_event()
-    yield message_delta_event(stop_reason, stop_sequence, _output_tokens(runner, "".join(collected)))
+    yield message_delta_event(
+        stop_reason, stop_sequence, _output_tokens(runner, "".join(collected), stopped=stopped)
+    )
     yield message_stop_event()
 
 
@@ -443,7 +452,14 @@ def make_handler(runner, *, api_key: Optional[str] = None):
                 length = int(self.headers.get("Content-Length", 0))
             except ValueError:
                 length = 0
-            raw = self.rfile.read(length) if length else b""
+            if length > MAX_REQUEST_BYTES:
+                self._send_error(AnthropicError(
+                    413, "request_too_large",
+                    f"request body exceeds the {MAX_REQUEST_BYTES} byte limit.",
+                ))
+                return
+            # Read at most the cap even if Content-Length lies, to bound memory.
+            raw = self.rfile.read(min(length, MAX_REQUEST_BYTES)) if length else b""
             try:
                 body = json.loads(raw or b"{}")
             except json.JSONDecodeError:
