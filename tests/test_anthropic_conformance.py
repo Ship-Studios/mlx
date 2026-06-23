@@ -130,3 +130,27 @@ def test_output_tokens_nondecreasing_across_frames():
     ]
     seen = [v for v in seen if v is not None]
     assert seen == sorted(seen), f"output_tokens not monotonic: {seen}"
+
+
+# --- L5: error must not poison a reused keep-alive connection -----------------
+def test_error_response_does_not_poison_pooled_connection():
+    """A 401 must not corrupt the next request on a reused keep-alive connection.
+
+    Reproduces the live failure that the happy-path round-trip tests missed: an
+    error response that doesn't drain the request body used to poison an HTTP/1.1
+    keep-alive connection — which httpx (and therefore the anthropic SDK) pools —
+    so the *next* request got mis-parsed into a bogus 501. Exercised over a real
+    httpx pool (the SDK's transport), capped to a single connection to force reuse.
+    Fails against the pre-fix server (r2 == 501); passes once errors close the conn.
+    """
+    httpx = pytest.importorskip("httpx")
+    body = {"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]}
+    with _running_server(FakeRunner(["ok"], finish_reason="stop"), api_key="secret") as base:
+        limits = httpx.Limits(max_keepalive_connections=1, max_connections=1)
+        with httpx.Client(base_url=base, limits=limits) as hc:
+            r1 = hc.post("/v1/messages", json=body)  # no x-api-key -> 401 error
+            assert r1.status_code == 401
+            # Same pool: before the fix the undrained body poisoned this into a 501.
+            r2 = hc.post("/v1/messages", json=body, headers={"x-api-key": "secret"})
+            assert r2.status_code == 200, f"poisoned conn after error: {r2.status_code} {r2.text[:120]}"
+            assert r2.json()["type"] == "message"
