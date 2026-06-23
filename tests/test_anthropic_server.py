@@ -39,7 +39,7 @@ def test_parse_text_block_content_and_system_blocks():
     ({"model": "m", "messages": [{"role": "user", "content": "x"}]}, "max_tokens"),
     ({"model": "m", "max_tokens": 0, "messages": [{"role": "user", "content": "x"}]}, "max_tokens"),
     ({"model": "m", "max_tokens": 1, "messages": []}, "messages"),
-    ({"model": "m", "max_tokens": 1, "messages": [{"role": "system", "content": "x"}]}, "role"),
+    ({"model": "m", "max_tokens": 1, "messages": [{"role": "robot", "content": "x"}]}, "role"),
 ])
 def test_parse_invalid(body, msg):
     with pytest.raises(a.AnthropicError) as e:
@@ -402,3 +402,56 @@ def test_request_after_error_on_same_connection_is_not_poisoned():
         assert r2.status == 200, (r2.status, data[:200])
         assert json.loads(data)["content"][0]["text"] == "ok"
         c.close()
+
+
+def test_handler_models_list_includes_loaded_model():
+    # Claude Code calls GET /v1/models at startup to confirm the model exists.
+    with _running_server(FakeRunner(["x"]), model="some/Model-4bit") as base:
+        r = urllib.request.urlopen(base + "/v1/models", timeout=5)
+        body = json.loads(r.read())
+        assert r.status == 200
+        ids = [m["id"] for m in body["data"]]
+        assert ids == ["some/Model-4bit"]
+        assert body["data"][0]["type"] == "model"
+
+
+def test_handler_models_retrieve_echoes_requested_id():
+    with _running_server(FakeRunner(["x"]), model="some/Model-4bit") as base:
+        r = urllib.request.urlopen(base + "/v1/models/whatever-id", timeout=5)
+        body = json.loads(r.read())
+        assert r.status == 200 and body["id"] == "whatever-id"
+
+
+def test_handler_models_list_requires_auth_when_keyed():
+    with _running_server(FakeRunner(["x"]), api_key="secret", model="m") as base:
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(base + "/v1/models", timeout=5)  # no x-api-key
+        assert e.value.code == 401
+
+
+def test_handler_models_list_empty_without_model():
+    with _running_server(FakeRunner(["x"])) as base:  # no model= passed
+        r = urllib.request.urlopen(base + "/v1/models", timeout=5)
+        assert json.loads(r.read())["data"] == []
+
+
+def test_handler_messages_accepts_query_string():
+    # Claude Code posts to /v1/messages?beta=true; the query string must not 404.
+    with _running_server(FakeRunner(["hi"])) as base:
+        r = _post(base, {"model": "m", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]},
+                  path="/v1/messages?beta=true")
+        assert r.status == 200
+        assert json.loads(r.read())["type"] == "message"
+
+
+def test_parse_request_folds_system_role_message_into_system():
+    # Claude Code puts its session context as a system-role message in `messages`.
+    parsed = a.parse_request({
+        "model": "m", "max_tokens": 8,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": "you are terse"},
+        ],
+    })
+    assert [x["role"] for x in parsed.messages] == ["user"]  # system removed
+    assert "you are terse" in (parsed.system or "")

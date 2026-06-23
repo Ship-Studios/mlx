@@ -25,10 +25,17 @@ def parse_request(body: dict) -> ParsedRequest:
         raise AnthropicError(400, "invalid_request_error", "`messages` is required and must be a non-empty array.")
 
     messages: List[dict] = []
+    system_from_messages: List[str] = []
     for i, m in enumerate(raw_messages):
         if not isinstance(m, dict):
             raise AnthropicError(400, "invalid_request_error", f"messages[{i}] must be an object.")
         role = m.get("role")
+        # The Anthropic schema only allows user/assistant in `messages`, but Claude
+        # Code includes its session/hook context as a `system`-role message in the
+        # array. Fold any system-role message into the system prompt rather than 400.
+        if role == "system":
+            system_from_messages.append(_content_to_text(m.get("content"), where=f"messages[{i}]"))
+            continue
         if role not in ("user", "assistant"):
             raise AnthropicError(
                 400, "invalid_request_error", f"messages[{i}].role must be 'user' or 'assistant'."
@@ -38,6 +45,9 @@ def parse_request(body: dict) -> ParsedRequest:
 
     system_val = body.get("system")
     system = _content_to_text(system_val, where="system") if system_val is not None else None
+    if system_from_messages:
+        parts = ([system] if system else []) + system_from_messages
+        system = "\n\n".join(p for p in parts if p) or None
 
     stops = body.get("stop_sequences") or []
     if not isinstance(stops, list) or any(not isinstance(s, str) for s in stops):
