@@ -24,7 +24,10 @@ def _apply_memory_guard(fraction: float = 0.8) -> Optional[int]:
     try:
         import mlx.core as mx
 
-        info = mx.metal.device_info()
+        # Prefer `mx.device_info()` (newer mlx); fall back to the deprecated
+        # `mx.metal.device_info()` only when the top-level call is absent.
+        getter = getattr(mx, "device_info", None) or mx.metal.device_info
+        info = getter()
         wss = int(info["max_recommended_working_set_size"])
         if wss <= 0:
             return None

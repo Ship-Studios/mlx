@@ -22,6 +22,8 @@ def _install_fake_mlx(monkeypatch, *, device_info=None, has_set_limit=True, wss=
 
     if device_info is None and wss is not None:
         device_info = {"max_recommended_working_set_size": wss}
+    # Newer mlx exposes device_info at the top level; keep metal for the fallback.
+    mlx_core.device_info = lambda: device_info
     mlx_core.metal = types.SimpleNamespace(device_info=lambda: device_info)
 
     if has_set_limit:
@@ -72,3 +74,34 @@ def test_guard_noop_when_working_set_zero(monkeypatch):
     captured = _install_fake_mlx(monkeypatch, wss=0)
     assert _apply_memory_guard() is None
     assert captured["limit"] is None
+
+
+def test_guard_prefers_top_level_device_info_over_deprecated(monkeypatch):
+    # If metal.device_info is ever touched, it raises — so a clean cap proves the
+    # guard used the non-deprecated mx.device_info() path.
+    import sys, types
+    captured = {"limit": None}
+    mlx = types.ModuleType("mlx")
+    core = types.ModuleType("mlx.core")
+    core.device_info = lambda: {"max_recommended_working_set_size": WSS}
+
+    def _boom():
+        raise AssertionError("deprecated mx.metal.device_info() was called")
+
+    core.metal = types.SimpleNamespace(device_info=_boom)
+    core.set_memory_limit = lambda limit: captured.__setitem__("limit", limit) or 0
+    mlx.core = core
+    monkeypatch.setitem(sys.modules, "mlx", mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    _apply_memory_guard(fraction=0.8)
+    assert captured["limit"] == int(WSS * 0.8)
+
+
+def test_guard_falls_back_to_metal_on_older_mlx(monkeypatch):
+    # Older mlx without a top-level device_info must still work via metal.
+    captured = _install_fake_mlx(monkeypatch)
+    # Drop the top-level api to simulate an older build.
+    import sys
+    del sys.modules["mlx.core"].device_info
+    _apply_memory_guard(fraction=0.8)
+    assert captured["limit"] == int(WSS * 0.8)
