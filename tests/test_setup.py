@@ -47,6 +47,16 @@ def test_recommend_returns_none_when_nothing_fits():
     assert catalog.recommend_model(1, safety_fraction=0.9) is None
 
 
+def test_catalog_estimate_reserves_runtime_headroom():
+    # Catalog estimates must reserve real headroom (activations + Metal allocator
+    # + KV cache), not the bare 5% that only covers weights — otherwise
+    # recommend_model picks a build that over-commits memory and panics the GPU.
+    m = catalog.CATALOG[3]  # a 7B 4-bit build
+    est = m.estimate()
+    assert est.overhead_bytes >= int(est.weights_bytes * 0.2)
+    assert est.total_bytes > est.weights_bytes
+
+
 def test_fitting_models_sorted_ascending():
     models = catalog.fitting_models(1024 * GIB)
     params = [m.params for m in models]

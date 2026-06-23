@@ -38,7 +38,7 @@ git clone <this-repo> && cd mlx && ./install.sh
 mlx-runner setup
 ```
 
-`setup` runs the readiness checks, recommends the largest catalog model that fits this machine's memory, downloads it, saves it as your default model, and runs a quick smoke-test generation. From then on you can just `mlx-runner chat` (no `-m` needed).
+`setup` runs the readiness checks, recommends the largest catalog model that fits this machine's memory, downloads it, saves it as your default model, and runs a quick smoke-test generation. From then on you can just `mlx-runner chat` (no `-m` needed). The recommendation reserves real memory headroom and the load is capped via MLX's memory limit, so the smoke test won't over-commit unified memory and panic the GPU driver.
 
 Useful flags: `--model/-m` to skip the recommendation and pick your own, `--no-download` / `--no-smoke-test` to do less, and `--force` to configure even when a readiness check fails. To inspect readiness on its own, use `mlx-runner doctor`.
 
@@ -92,7 +92,7 @@ mlx-runner fit 1.5B --bits 8 --seq-len 8192
 mlx-runner fit 13B --json
 ```
 
-Parameter counts accept `K`/`M`/`B`/`T` suffixes (e.g. `350M`, `1.5B`) or a plain integer. The output reports the estimated breakdown (weights / KV-cache / overhead) and recommends the highest-quality quantization that fits. Pass KV-cache dimensions (`--layers`, `--kv-heads`, `--head-dim`) to include the cache in the estimate. `--safety` sets the fraction of available memory treated as usable (default `0.9`); `setup` accepts the same flag when recommending a model.
+Parameter counts accept `K`/`M`/`B`/`T` suffixes (e.g. `350M`, `1.5B`) or a plain integer. The output reports the estimated breakdown (weights / KV-cache / overhead) and recommends the highest-quality quantization that fits. Pass KV-cache dimensions (`--layers`, `--kv-heads`, `--head-dim`) to include the cache in the estimate. `--safety` sets the fraction of available memory treated as usable (default `0.8`, leaving headroom for KV-cache and activations); `setup` accepts the same flag when recommending a model.
 
 Exit code is `1` when the model does not fit, `0` when it does.
 

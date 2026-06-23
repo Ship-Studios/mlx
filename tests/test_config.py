@@ -10,7 +10,7 @@ def test_defaults_when_no_file(tmp_path):
     assert cfg.model is None
     assert cfg.max_tokens == 512
     assert cfg.temperature == 0.0
-    assert cfg.safety_fraction == 0.9
+    assert cfg.safety_fraction == 0.8
 
 
 def test_save_then_load_roundtrip(tmp_path):
