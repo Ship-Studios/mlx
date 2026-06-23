@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ._apply_memory_guard import _apply_memory_guard
 from ._import_mlx_lm import _import_mlx_lm
 
 
@@ -31,6 +32,11 @@ class _ModelRunnerLoadMixin:
             MLXNotAvailableError: If mlx-lm is not installed.
         """
         mlx_lm = _import_mlx_lm()
+        # Cap MLX's memory limit before allocating any weights. MLX defaults to
+        # 1.5x the recommended working set, which lets an oversized model load
+        # over-commit wired GPU memory and panic the kernel instead of raising a
+        # catchable OOM. Best-effort: a no-op on older mlx / missing device info.
+        _apply_memory_guard()
         # `trust_remote_code` only became a top-level `mlx_lm.load()` argument in
         # newer mlx-lm; older versions (at/above our >=0.21.0 floor) reject it with
         # TypeError. Try passing it; on the specific "unexpected keyword argument"

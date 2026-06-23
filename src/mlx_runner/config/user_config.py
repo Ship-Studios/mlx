@@ -23,7 +23,7 @@ class UserConfig:
     seed: Optional[int] = None
     max_kv_size: Optional[int] = None
     kv_bits: Optional[int] = None
-    safety_fraction: float = 0.9
+    safety_fraction: float = 0.8  # leave headroom for KV/activations; avoids GPU over-commit
 
     def to_dict(self) -> dict:
         return asdict(self)
