@@ -19,7 +19,7 @@ def serve(
     from ..runner import ModelRunner
 
     runner = ModelRunner.load(model_path, adapter_path=adapter_path, trust_remote_code=trust_remote_code)
-    handler = make_handler(runner, api_key=api_key)
+    handler = make_handler(runner, api_key=api_key, model=model_path)
     httpd = ThreadingHTTPServer((host, port), handler)
     try:
         httpd.serve_forever()

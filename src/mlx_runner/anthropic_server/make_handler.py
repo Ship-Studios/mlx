@@ -9,6 +9,8 @@ from .anthropic_error import AnthropicError
 from .parsed_request import ParsedRequest
 from .parse_request import parse_request
 from .new_message_id import new_message_id
+from ._models_list import _models_list
+from ._model_object import _model_object
 from .sse_event import sse_event
 from .generate_full import generate_full
 from .generate_stream import generate_stream
@@ -16,7 +18,7 @@ from ._constant_time_eq import _constant_time_eq
 from ._constants import MAX_REQUEST_BYTES
 
 
-def make_handler(runner, *, api_key: Optional[str] = None):
+def make_handler(runner, *, api_key: Optional[str] = None, model: Optional[str] = None):
     """Build a BaseHTTPRequestHandler class bound to ``runner``.
 
     Generation is serialized with a lock — a single MLX model is not safe to run
@@ -58,14 +60,35 @@ def make_handler(runner, *, api_key: Optional[str] = None):
                 return AnthropicError(401, "authentication_error", "invalid x-api-key.")
             return None
 
-        def do_GET(self):  # a tiny health endpoint
-            if self.path.rstrip("/") == "/health":
+        def do_GET(self):
+            path = self.path.split("?", 1)[0].rstrip("/")
+            if path == "/health":  # a tiny health endpoint (no auth)
                 self._send_json(200, {"status": "ok"})
-            else:
-                self._send_error(AnthropicError(404, "not_found_error", "not found."))
+                return
+            # Model discovery: clients such as Claude Code call GET /v1/models at
+            # startup to validate the configured model exists; without it they
+            # report "the model may not exist" and never send a message.
+            if path == "/v1/models":
+                if (err := self._check_auth()):
+                    self._send_error(err)
+                    return
+                self._send_json(200, _models_list(model))
+                return
+            if path.startswith("/v1/models/"):
+                if (err := self._check_auth()):
+                    self._send_error(err)
+                    return
+                requested = path[len("/v1/models/"):]
+                self._send_json(200, _model_object(requested or model or ""))
+                return
+            self._send_error(AnthropicError(404, "not_found_error", "not found."))
 
         def do_POST(self):
-            if self.path.rstrip("/") != "/v1/messages":
+            # Strip the query string before routing: Claude Code posts to
+            # `/v1/messages?beta=true`, and matching the full path would 404 —
+            # which clients surface as "the model may not exist".
+            path = self.path.split("?", 1)[0].rstrip("/")
+            if path != "/v1/messages":
                 self._send_error(AnthropicError(404, "not_found_error", f"unknown path {self.path!r}."))
                 return
             auth_err = self._check_auth()
