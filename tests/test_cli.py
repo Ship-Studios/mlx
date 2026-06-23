@@ -195,3 +195,64 @@ def test_serve_invokes_mlx_lm_server(monkeypatch, capsys):
     # forwarded extra args, with the separating "--" stripped
     assert cmd[-2:] == ["--max-tokens", "100"]
     assert "--" not in cmd
+
+
+def _force_no_default_model(monkeypatch):
+    """Pin build_parser to a clean config so a user's on-disk default model can't
+    suppress serve's auto-selection in these tests."""
+    import importlib
+
+    from mlx_runner.config import UserConfig
+
+    bp_mod = importlib.import_module("mlx_runner.cli.build_parser")
+    monkeypatch.setattr(bp_mod, "load_config", lambda: UserConfig())
+
+
+def test_serve_auto_selects_a_fitting_model(monkeypatch, capsys):
+    """`serve` with no --model picks a catalog model sized to the detected RAM."""
+    import importlib
+
+    serve_mod = importlib.import_module("mlx_runner.cli.cmd_serve")
+    _force_no_default_model(monkeypatch)
+    fake_hw = types.SimpleNamespace(
+        can_run_mlx=True,
+        recommended_working_set_bytes=32 * 1024**3,
+        total_ram_bytes=32 * 1024**3,
+    )
+    monkeypatch.setattr(serve_mod, "detect_hardware", lambda: fake_hw)
+
+    captured = {}
+
+    def fake_call(cmd):
+        captured["cmd"] = cmd
+        return 0
+
+    monkeypatch.setattr(cli.subprocess, "call", fake_call)
+
+    # No -m: selection runs. pytest's stdin is not a TTY, so it takes the default
+    # (the largest catalog model that fits the 32GB budget at 0.8 safety).
+    rc = cli.main(["serve", "--host", "127.0.0.1", "--port", "9001"])
+    assert rc == 0
+    cmd = captured["cmd"]
+    chosen = cmd[cmd.index("--model") + 1]
+    assert chosen.startswith("mlx-community/")
+    # The non-TTY auto-selection is announced on stderr.
+    assert "auto-selecting" in capsys.readouterr().err.lower()
+
+
+def test_serve_auto_select_reports_when_nothing_fits(monkeypatch, capsys):
+    """A machine too small for any catalog model fails cleanly, not by crashing."""
+    import importlib
+
+    serve_mod = importlib.import_module("mlx_runner.cli.cmd_serve")
+    _force_no_default_model(monkeypatch)
+    tiny_hw = types.SimpleNamespace(
+        can_run_mlx=True,
+        recommended_working_set_bytes=64 * 1024**2,  # 64 MiB: nothing fits
+        total_ram_bytes=64 * 1024**2,
+    )
+    monkeypatch.setattr(serve_mod, "detect_hardware", lambda: tiny_hw)
+
+    rc = cli.main(["serve"])
+    assert rc == 1
+    assert "no catalog model fits" in capsys.readouterr().err.lower()

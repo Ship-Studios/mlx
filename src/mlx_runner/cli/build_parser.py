@@ -114,7 +114,13 @@ def build_parser(config: Optional[UserConfig] = None) -> argparse.ArgumentParser
         help="Serve an HTTP API (OpenAI-compatible via mlx_lm.server, or Anthropic Messages).",
     )
     p_serve.add_argument(
-        "--model", "-m", default=config.model, help="Default model to serve."
+        "--model", "-m", default=config.model,
+        help="Model to serve. Omit to choose from catalog models that fit this machine.",
+    )
+    p_serve.add_argument(
+        "--safety", type=float, default=0.8,
+        help="Fraction of memory usable when auto-picking a model (0-1]; lower = more "
+        "KV-cache headroom (default: 0.8).",
     )
     p_serve.add_argument(
         "--api", choices=["openai", "anthropic"], default="openai",

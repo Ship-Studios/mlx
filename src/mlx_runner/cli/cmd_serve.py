@@ -5,6 +5,7 @@ import sys
 from ..hardware import detect_hardware
 from ._launch_tunnel import _launch_tunnel
 from ._resolve_api_key import _resolve_api_key
+from ._select_serve_model import _select_serve_model
 from ._serve_anthropic import _serve_anthropic
 from ._serve_openai import _serve_openai
 
@@ -16,6 +17,13 @@ def cmd_serve(args) -> int:
             "warning: this is not an Apple-silicon Mac; the model may not run.",
             file=sys.stderr,
         )
+
+    # No --model: pick one the detected hardware can actually hold, instead of
+    # blindly loading whatever's configured and risking a unified-memory crash.
+    if not args.model:
+        args.model = _select_serve_model(hw, safety_fraction=args.safety)
+        if not args.model:
+            return 1
 
     # Resolve the effective key ONCE (--api-key flag > --api-key-file), then drive the
     # warnings and _serve_anthropic off it. Writing it back to args.api_key means a key
